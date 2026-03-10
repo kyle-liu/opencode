@@ -1,3 +1,9 @@
+/**
+ * Server 模块：opencode HTTP API 入口
+ *
+ * 中间件顺序：错误处理 → Basic 认证 → 日志 → CORS → Instance 注入
+ * 路由：/session、/tui、/event、/project 等，未匹配则代理到 app.opencode.ai
+ */
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Log } from "../util/log"
@@ -44,21 +50,29 @@ import { MDNS } from "./mdns"
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
 
+/**
+ * Server 命名空间：opencode HTTP API 的入口
+ * - App(): 返回 Hono 应用，含中间件与路由
+ * - listen(): 启动 Bun HTTP 服务器
+ * - url(): 获取当前服务器地址
+ */
 export namespace Server {
   const log = Log.create({ service: "server" })
 
-  let _url: URL | undefined
-  let _corsWhitelist: string[] = []
+  let _url: URL | undefined // 启动后写入，供 url() 返回
+  let _corsWhitelist: string[] = [] // 从 listen opts 传入的 CORS 白名单
 
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
   }
 
   const app = new Hono()
+  /** 惰性初始化：首次调用 App() 时才构建完整路由链 */
   export const App: () => Hono = lazy(
     () =>
       // TODO: Break server.ts into smaller route files to fix type inference
       app
+        /* ========== 1. 全局错误处理 ========== */
         .onError((err, c) => {
           log.error("failed", {
             error: err,
@@ -77,8 +91,9 @@ export namespace Server {
             status: 500,
           })
         })
+        /* ========== 2. Basic 认证（可选） ========== */
         .use((c, next) => {
-          // Allow CORS preflight requests to succeed without auth.
+          // OPTIONS 预检请求跳过认证
           // Browser clients sending Authorization headers will preflight with OPTIONS.
           if (c.req.method === "OPTIONS") return next()
           const password = Flag.OPENCODE_SERVER_PASSWORD
@@ -86,6 +101,7 @@ export namespace Server {
           const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
           return basicAuth({ username, password })(c, next)
         })
+        /* ========== 3. 请求日志 ========== */
         .use(async (c, next) => {
           const skipLogging = c.req.path === "/log"
           if (!skipLogging) {
@@ -103,6 +119,7 @@ export namespace Server {
             timer.stop()
           }
         })
+        /* ========== 4. CORS ========== */
         .use(
           cors({
             origin(input) {
@@ -129,6 +146,7 @@ export namespace Server {
             },
           }),
         )
+        /* ========== 5. 路由挂载（认证前，无 directory 依赖） ========== */
         .route("/global", GlobalRoutes())
         .put(
           "/auth/:providerID",
@@ -192,8 +210,10 @@ export namespace Server {
             return c.json(true)
           },
         )
+        /* ========== 6. Instance 注入：根据 directory 提供项目上下文 ========== */
         .use(async (c, next) => {
           if (c.req.path === "/log") return next()
+          // directory 来源：query 参数、请求头、或当前工作目录
           const raw = c.req.query("directory") || c.req.header("x-opencode-directory") || process.cwd()
           const directory = (() => {
             try {
@@ -210,6 +230,7 @@ export namespace Server {
             },
           })
         })
+        /* ========== 7. OpenAPI 文档 ========== */
         .get(
           "/doc",
           openAPIRouteHandler(app, {
@@ -223,6 +244,7 @@ export namespace Server {
             },
           }),
         )
+        /* ========== 8. 业务路由（需 directory，即 Instance 上下文） ========== */
         .use(validator("query", z.object({ directory: z.string().optional() })))
         .route("/project", ProjectRoutes())
         .route("/pty", PtyRoutes())
@@ -235,8 +257,9 @@ export namespace Server {
         .route("/", FileRoutes())
         .route("/mcp", McpRoutes())
         .route("/tui", TuiRoutes())
+        /* ========== 9. 单一路由 ========== */
         .post(
-          "/instance/dispose",
+          "/instance/dispose", // 释放当前 Instance，清理资源
           describeRoute({
             summary: "Dispose instance",
             description: "Clean up and dispose the current OpenCode instance, releasing all resources.",
@@ -258,7 +281,7 @@ export namespace Server {
           },
         )
         .get(
-          "/path",
+          "/path", // 获取 home、state、config、worktree、directory 等路径
           describeRoute({
             summary: "Get paths",
             description:
@@ -298,7 +321,7 @@ export namespace Server {
           },
         )
         .get(
-          "/vcs",
+          "/vcs", // 获取 VCS 信息（如 git branch）
           describeRoute({
             summary: "Get VCS info",
             description:
@@ -323,7 +346,7 @@ export namespace Server {
           },
         )
         .get(
-          "/command",
+          "/command", // 列出可用命令
           describeRoute({
             summary: "List commands",
             description: "Get a list of all available commands in the OpenCode system.",
@@ -345,7 +368,7 @@ export namespace Server {
           },
         )
         .post(
-          "/log",
+          "/log", // 客户端写入服务端日志
           describeRoute({
             summary: "Write log",
             description: "Write a log entry to the server logs with specified level and metadata.",
@@ -397,7 +420,7 @@ export namespace Server {
           },
         )
         .get(
-          "/agent",
+          "/agent", // 列出可用 Agent
           describeRoute({
             summary: "List agents",
             description: "Get a list of all available AI agents in the OpenCode system.",
@@ -419,7 +442,7 @@ export namespace Server {
           },
         )
         .get(
-          "/skill",
+          "/skill", // 列出可用 Skill
           describeRoute({
             summary: "List skills",
             description: "Get a list of all available skills in the OpenCode system.",
@@ -441,7 +464,7 @@ export namespace Server {
           },
         )
         .get(
-          "/lsp",
+          "/lsp", // LSP 服务状态
           describeRoute({
             summary: "Get LSP status",
             description: "Get LSP server status",
@@ -462,7 +485,7 @@ export namespace Server {
           },
         )
         .get(
-          "/formatter",
+          "/formatter", // 格式化器状态
           describeRoute({
             summary: "Get formatter status",
             description: "Get formatter status",
@@ -482,6 +505,7 @@ export namespace Server {
             return c.json(await Format.status())
           },
         )
+        /* ========== 10. SSE 事件流：Bus.publish 的事件推送给订阅者 ========== */
         .get(
           "/event",
           describeRoute({
@@ -501,6 +525,7 @@ export namespace Server {
           }),
           async (c) => {
             log.info("event connected")
+            // SSE 流：Bus.subscribeAll 订阅所有事件，写入 stream
             return streamSSE(c, async (stream) => {
               stream.writeSSE({
                 data: JSON.stringify({
@@ -509,15 +534,11 @@ export namespace Server {
                 }),
               })
               const unsub = Bus.subscribeAll(async (event) => {
-                await stream.writeSSE({
-                  data: JSON.stringify(event),
-                })
-                if (event.type === Bus.InstanceDisposed.type) {
-                  stream.close()
-                }
+                await stream.writeSSE({ data: JSON.stringify(event) })
+                if (event.type === Bus.InstanceDisposed.type) stream.close()
               })
 
-              // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
+              // 每 30 秒心跳，防止 WKWebView 等 60 秒超时断开
               const heartbeat = setInterval(() => {
                 stream.writeSSE({
                   data: JSON.stringify({
@@ -538,6 +559,7 @@ export namespace Server {
             })
           },
         )
+        /* ========== 11. 兜底：未匹配路由代理到 app.opencode.ai ========== */
         .all("/*", async (c) => {
           const path = c.req.path
 
@@ -556,6 +578,7 @@ export namespace Server {
         }) as unknown as Hono,
   )
 
+  /** 生成 OpenAPI 规范 JSON */
   export async function openapi() {
     // Cast to break excessive type recursion from long route chains
     const result = await generateSpecs(App() as Hono, {
@@ -571,6 +594,7 @@ export namespace Server {
     return result
   }
 
+  /** 启动 Bun HTTP 服务器，可启用 mDNS 广播 */
   export function listen(opts: {
     port: number
     hostname: string
@@ -593,11 +617,13 @@ export namespace Server {
         return undefined
       }
     }
+    // port 为 0 时先试 4096，失败则由系统分配
     const server = opts.port === 0 ? (tryServe(4096) ?? tryServe(0)) : tryServe(opts.port)
     if (!server) throw new Error(`Failed to start server on port ${opts.port}`)
 
     _url = server.url
 
+    // 非环回地址时才发布 mDNS
     const shouldPublishMDNS =
       opts.mdns &&
       server.port &&

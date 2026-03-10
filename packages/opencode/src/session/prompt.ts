@@ -59,7 +59,19 @@ IMPORTANT:
 - This tool provides your final answer - no further actions are taken after calling it`
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
-
+/**
+ * export namespace SessionPrompt  是 TypeScript 的 命名空间声明，用来把一组变量、函数、类型等组织在一个名字下面，并导出。
+ * 命名空间的作用
+ * 逻辑分组：把相关函数、变量、类型放在一起。
+ * 避免命名冲突：内部名字都挂在 SessionPrompt 下，如 SessionPrompt.prompt()、SessionPrompt.command()。
+ * 
+ * 与 class 的区别
+ * 方面	namespace	class
+ * 实例化	不能 new	可以 new SessionPrompt()
+ * 内部状态	通常用模块级变量	实例属性
+ * 主要用途	组织静态函数/常量	面向对象、实例状态
+ * SessionPrompt 这种写法常用于：提供一组静态工具函数，不依赖实例状态，只是按功能分组。
+ */
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
 

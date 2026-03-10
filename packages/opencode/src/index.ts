@@ -1,3 +1,7 @@
+/**
+ * OpenCode CLI 入口
+ * 使用 yargs 解析命令行参数，根据子命令路由到对应 handler
+ */
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
@@ -27,20 +31,23 @@ import { WebCommand } from "./cli/cmd/web"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 
+// 全局错误捕获：未处理的 Promise rejection
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
     e: e instanceof Error ? e.message : e,
   })
 })
 
+// 全局错误捕获：未捕获的同步异常
 process.on("uncaughtException", (e) => {
   Log.Default.error("exception", {
     e: e instanceof Error ? e.message : e,
   })
 })
 
+// 构建 yargs CLI：hideBin 去掉 process.argv 前两项（可执行路径、脚本路径），只保留用户参数
 const cli = yargs(hideBin(process.argv))
-  .parserConfiguration({ "populate--": true })
+  .parserConfiguration({ "populate--": true }) // 支持 -- 后参数透传
   .scriptName("opencode")
   .wrap(100)
   .help("help", "show help")
@@ -56,6 +63,7 @@ const cli = yargs(hideBin(process.argv))
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
+  // 每个子命令执行前都会运行的 middleware
   .middleware(async (opts) => {
     await Log.init({
       print: process.argv.includes("--print-logs"),
@@ -67,8 +75,8 @@ const cli = yargs(hideBin(process.argv))
       })(),
     })
 
-    process.env.AGENT = "1"
-    process.env.OPENCODE = "1"
+    process.env.AGENT = "1" // 标记为 Agent 环境
+    process.env.OPENCODE = "1" // 标记为 OpenCode 环境
 
     Log.Default.info("opencode", {
       version: Installation.VERSION,
@@ -77,6 +85,7 @@ const cli = yargs(hideBin(process.argv))
   })
   .usage("\n" + UI.logo())
   .completion("completion", "generate shell completion script")
+  // 注册子命令；TuiThreadCommand 使用 command: "$0 [project]"，无子命令时作为默认（启动 TUI）
   .command(AcpCommand)
   .command(McpCommand)
   .command(TuiThreadCommand)
@@ -97,6 +106,7 @@ const cli = yargs(hideBin(process.argv))
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
+  // 解析失败时的处理：参数类错误显示 help，其他抛出并退出
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||
@@ -109,11 +119,12 @@ const cli = yargs(hideBin(process.argv))
     if (err) throw err
     process.exit(1)
   })
-  .strict()
+  .strict() // 未知选项时报错
 
 try {
-  await cli.parse()
+  await cli.parse() // 解析参数并执行对应子命令 handler
 } catch (e) {
+  // 收集错误信息用于日志
   let data: Record<string, any> = {}
   if (e instanceof NamedError) {
     const obj = e.toObject()
@@ -132,6 +143,7 @@ try {
   }
 
   if (e instanceof ResolveMessage) {
+    // 模块解析错误（如 Bun 的 import 失败）
     Object.assign(data, {
       name: e.name,
       message: e.message,
@@ -143,7 +155,7 @@ try {
     })
   }
   Log.Default.error("fatal", data)
-  const formatted = FormatError(e)
+  const formatted = FormatError(e) // 格式化为用户可读的错误信息
   if (formatted) UI.error(formatted)
   if (formatted === undefined) {
     UI.error("Unexpected error, check log file at " + Log.file() + " for more details" + EOL)
@@ -151,6 +163,7 @@ try {
   }
   process.exitCode = 1
 } finally {
+  // 显式 exit 确保子进程（如 MCP、Docker 容器）被正确清理
   // Some subprocesses don't react properly to SIGTERM and similar signals.
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
